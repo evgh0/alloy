@@ -137,6 +137,7 @@ pub fn start() -> Result<(), JsValue> {
         });
     }
 
+    // Build the full animated instance set for this frame.
     fn build_instance_records(time: f32) -> Vec<InstanceRecord> {
         let mut transforms = Vec::with_capacity(5 * 5 * 5);
         let spacing = 1.2_f32;
@@ -162,6 +163,7 @@ pub fn start() -> Result<(), JsValue> {
         transforms
     }
 
+    // Flatten only the instances that belong to one mesh into the GPU buffer layout.
     fn pack_instances_for_mesh(instances: &[InstanceRecord], mesh_index: u32) -> Vec<f32> {
         let mut packed = Vec::with_capacity(instances.len() * 8);
 
