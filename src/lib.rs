@@ -6,7 +6,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    HtmlCanvasElement, WebGl2RenderingContext as GL, WebGlBuffer, WebGlProgram,
+    console, HtmlCanvasElement, WebGl2RenderingContext as GL, WebGlBuffer, WebGlProgram,
     WebGlShader, WebGlVertexArrayObject,
 };
 
@@ -119,18 +119,6 @@ impl MeshBatch {
         gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &instance_array, GL::DYNAMIC_DRAW);
         self.instance_count.set((instance_data.len() / 8) as i32);
     }
-
-    fn append_instance(&self, gl: &GL, instance_data: &[f32; 8]) {
-        let instance_array = {
-            let mut stored_instances = self.instance_data.borrow_mut();
-            stored_instances.extend_from_slice(instance_data);
-            js_sys::Float32Array::from(stored_instances.as_slice())
-        };
-
-        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&self._instance_buffer));
-        gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &instance_array, GL::DYNAMIC_DRAW);
-        self.instance_count.set((instance_array.length() / 8) as i32);
-    }
 }
 
 impl CanvasApp {
@@ -201,9 +189,11 @@ impl CanvasApp {
         let camera_inner = Rc::clone(&self.camera);
         let mut batcher = self.batcher;
         let scene_inner = Rc::clone(&scene);
-        let frame_interval = 1000.0 / self.update_frequency as f64;
-        let last_frame_time = Rc::new(RefCell::new(f64::NEG_INFINITY));
-        let last_frame_time_inner = Rc::clone(&last_frame_time);
+        let update_interval = 1000.0 / self.update_frequency as f64;
+        let last_update_time = Rc::new(RefCell::new(f64::NEG_INFINITY));
+        let last_update_time_inner = Rc::clone(&last_update_time);
+        let last_draw_time = Rc::new(RefCell::new(f64::NEG_INFINITY));
+        let last_draw_time_inner = Rc::clone(&last_draw_time);
 
         *raf_handle_inner.borrow_mut() = Some(Closure::wrap(Box::new(move |time: f64| {
             let logical_width = window_inner
@@ -227,20 +217,54 @@ impl CanvasApp {
                 canvas_inner.set_height(height);
             }
 
-            if time - *last_frame_time_inner.borrow() >= frame_interval {
-                *last_frame_time_inner.borrow_mut() = time;
-                camera_inner.update_aspect(gl_inner.as_ref(), logical_width as f32 / logical_height as f32);
+            camera_inner.update_aspect(gl_inner.as_ref(), logical_width as f32 / logical_height as f32);
 
+            if *last_update_time_inner.borrow() == f64::NEG_INFINITY
+                || time - *last_update_time_inner.borrow() >= update_interval
+            {
+                *last_update_time_inner.borrow_mut() = time;
                 scene_inner.borrow_mut().update(time as f32);
-                batcher.clear();
-                scene_inner.borrow().draw(&mut batcher);
-
-                gl_inner.viewport(0, 0, width as i32, height as i32);
-                gl_inner.clear_color(0.02, 0.02, 0.05, 1.0);
-                gl_inner.clear(GL::COLOR_BUFFER_BIT | GL::DEPTH_BUFFER_BIT);
-
-                batcher.draw();
             }
+
+            batcher.clear();
+            scene_inner.borrow().draw(&mut batcher);
+            batcher.flush();
+
+            gl_inner.viewport(0, 0, width as i32, height as i32);
+            gl_inner.clear_color(0.02, 0.02, 0.05, 1.0);
+            gl_inner.clear(GL::COLOR_BUFFER_BIT | GL::DEPTH_BUFFER_BIT);
+
+            batcher.draw();
+
+            /*
+            if *last_draw_time_inner.borrow() != f64::NEG_INFINITY {
+                let delta_ms = time - *last_draw_time_inner.borrow();
+                let estimated_fps = if delta_ms > 0.0 {
+                    1000.0 / delta_ms
+                } else {
+                    f64::INFINITY
+                };
+                console::log_1(
+                    &format!("frame dt: {:.2} ms (~{:.1} fps)", delta_ms, estimated_fps).into(),
+                );
+            }
+             */
+
+            *last_draw_time_inner.borrow_mut() = time;
+
+            // *fps_frame_count_inner.borrow_mut() += 1;
+            // if *fps_last_sample_time_inner.borrow() == f64::NEG_INFINITY {
+            //     *fps_last_sample_time_inner.borrow_mut() = time;
+            // } else {
+            //     let elapsed = time - *fps_last_sample_time_inner.borrow();
+            //     if elapsed >= 1000.0 {
+            //         let frames = *fps_frame_count_inner.borrow();
+            //         let fps = (frames as f64 * 1000.0 / elapsed).round() as u32;
+            //         console::log_1(&format!("fps: {}", fps).into());
+            //         *fps_frame_count_inner.borrow_mut() = 0;
+            //         *fps_last_sample_time_inner.borrow_mut() = time;
+            //     }
+            // }
 
             window_inner
                 .request_animation_frame(
