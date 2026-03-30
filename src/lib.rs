@@ -11,7 +11,7 @@ use web_sys::{
 };
 
 mod camera;
-mod primitiv;
+mod primitive;
 mod batcher;
 mod example;
 use batcher::Batcher;
