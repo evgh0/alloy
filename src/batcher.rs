@@ -51,7 +51,7 @@ fn pack_instances_for_mesh(instances: &[InstanceRecord], mesh_index: u32) -> Vec
 use std::collections::HashMap;
 use web_sys::{WebGl2RenderingContext, WebGlProgram};
 use crate::MeshBatch;
-use crate::primitiv::cube;
+use crate::primitive::cube;
 
 #[allow(dead_code)]
 pub struct Batcher {
