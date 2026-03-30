@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="250 220 520 570" role="img" aria-label="Alloy icon" style="background-color: transparent;">
+  <defs>
+    <linearGradient id="topGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F9A825"/>
+      <stop offset="100%" stop-color="#FF7A21"/>
+    </linearGradient>
+    <linearGradient id="midGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6c757d"/>
+      <stop offset="100%" stop-color="#6c757d"/>
+    </linearGradient>
+    <linearGradient id="botGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#495057"/>
+      <stop offset="100%" stop-color="#343a40"/>
+    </linearGradient>
+
+    <path id="layer-shape" d="M512 236
+      C530 236 549 241 565 251
+      L714 337
+      C737 350 750 366 750 382
+      L750 427
+      C750 444 738 460 714 474
+      L565 560
+      C549 570 530 575 512 575
+      C494 575 475 570 459 560
+      L310 474
+      C286 460 274 444 274 427
+      L274 382
+      C274 366 287 350 310 337
+      L459 251
+      C475 241 494 236 512 236 Z"/>
+
+    <clipPath id="clipTop"><use href="#layer-shape"/></clipPath>
+    <clipPath id="clipMid"><use href="#layer-shape" transform="translate(0,104)"/></clipPath>
+    <clipPath id="clipBot"><use href="#layer-shape" transform="translate(0,208)"/></clipPath>
+  </defs>
+
+
+  <!-- bottom layer -->
+  <g clip-path="url(#clipBot)">
+    <rect x="210" y="444" width="604" height="340" fill="url(#botGrad)"/>
+  </g>
+  <use href="#layer-shape" transform="translate(0,208)" fill="none" stroke="#ECECEC" stroke-width="12" stroke-linejoin="round"/>
+
+  <!-- middle layer -->
+  <g clip-path="url(#clipMid)">
+    <rect x="210" y="340" width="604" height="340" fill="url(#midGrad)"/>
+  </g>
+  <use href="#layer-shape" transform="translate(0,104)" fill="none" stroke="#ECECEC" stroke-width="12" stroke-linejoin="round"/>
+
+  <!-- top layer -->
+  <g clip-path="url(#clipTop)">
+    <rect x="210" y="236" width="604" height="340" fill="url(#topGrad)"/>
+  </g>
+  <use href="#layer-shape" fill="none" stroke="#ECECEC" stroke-width="12" stroke-linejoin="round"/>
+</svg>

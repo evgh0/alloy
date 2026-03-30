@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use wasm_bindgen::closure::Closure;
@@ -30,14 +31,103 @@ pub fn canvas() -> Result<CanvasApp, JsValue> {
     CanvasApp::init()
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CanvasModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CanvasMouseButtonEvent {
+    pub button: u16,
+    pub x: f64,
+    pub y: f64,
+    pub modifiers: CanvasModifiers,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CanvasMouseMoveEvent {
+    pub x: f64,
+    pub y: f64,
+    pub dx: f64,
+    pub dy: f64,
+    pub buttons: u16,
+    pub modifiers: CanvasModifiers,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CanvasWheelEvent {
+    pub delta_x: f64,
+    pub delta_y: f64,
+    pub delta_z: f64,
+    pub x: f64,
+    pub y: f64,
+    pub modifiers: CanvasModifiers,
+}
+
+#[derive(Default)]
+struct CanvasListeners {
+    mouse_down: Option<Box<dyn FnMut(CanvasMouseButtonEvent)>>,
+    mouse_move: Option<Box<dyn FnMut(CanvasMouseMoveEvent)>>,
+    mouse_up: Option<Box<dyn FnMut(CanvasMouseButtonEvent)>>,
+    wheel: Option<Box<dyn FnMut(CanvasWheelEvent)>>,
+}
+
 pub struct CanvasApp {
     gl: Rc<GL>,
     canvas: Rc<HtmlCanvasElement>,
     window: Rc<web_sys::Window>,
-    camera: Rc<camera::CameraUniform>,
+    camera: Rc<RefCell<camera::CameraUniform>>,
     batcher: Batcher,
     update_frequency: u32,
+    event_logging: bool,
+    start_in_freeflight: bool,
+    listeners: CanvasListeners,
     scene: Option<Box<dyn Scene>>,
+}
+
+#[derive(Default)]
+struct InputState {
+    mouse_dx: f64,
+    mouse_dy: f64,
+    wheel_delta: f64,
+    mouse_buttons: u16,
+    modifiers: CanvasModifiers,
+    keys_down: HashSet<String>,
+    toggle_freeflight_requested: bool,
+}
+
+impl InputState {
+    fn take_frame(&mut self) -> InputFrame {
+        let frame = InputFrame {
+            mouse_dx: self.mouse_dx,
+            mouse_dy: self.mouse_dy,
+            wheel_delta: self.wheel_delta,
+            mouse_buttons: self.mouse_buttons,
+            modifiers: self.modifiers,
+            keys_down: self.keys_down.clone(),
+            toggle_freeflight_requested: self.toggle_freeflight_requested,
+        };
+
+        self.mouse_dx = 0.0;
+        self.mouse_dy = 0.0;
+        self.wheel_delta = 0.0;
+        self.toggle_freeflight_requested = false;
+
+        frame
+    }
+}
+
+struct InputFrame {
+    mouse_dx: f64,
+    mouse_dy: f64,
+    wheel_delta: f64,
+    mouse_buttons: u16,
+    modifiers: CanvasModifiers,
+    keys_down: HashSet<String>,
+    toggle_freeflight_requested: bool,
 }
 
 struct MeshBatch {
@@ -154,9 +244,12 @@ impl CanvasApp {
             gl: Rc::new(gl),
             canvas: Rc::new(canvas),
             window: Rc::new(window),
-            camera: Rc::new(camera),
+            camera: Rc::new(RefCell::new(camera)),
             batcher,
             update_frequency: 60,
+            event_logging: false,
+            start_in_freeflight: false,
+            listeners: CanvasListeners::default(),
             scene: None,
         })
     }
@@ -166,6 +259,48 @@ impl CanvasApp {
     }
 
     pub fn camera(self) -> Self {
+        self
+    }
+
+    pub fn freeflight(mut self) -> Self {
+        self.start_in_freeflight = true;
+        self
+    }
+
+    pub fn enable_logging(mut self) -> Self {
+        self.event_logging = true;
+        self
+    }
+
+    pub fn on_mouse_down<F>(mut self, callback: F) -> Self
+    where
+        F: 'static + FnMut(CanvasMouseButtonEvent),
+    {
+        self.listeners.mouse_down = Some(Box::new(callback));
+        self
+    }
+
+    pub fn on_mouse_move<F>(mut self, callback: F) -> Self
+    where
+        F: 'static + FnMut(CanvasMouseMoveEvent),
+    {
+        self.listeners.mouse_move = Some(Box::new(callback));
+        self
+    }
+
+    pub fn on_mouse_up<F>(mut self, callback: F) -> Self
+    where
+        F: 'static + FnMut(CanvasMouseButtonEvent),
+    {
+        self.listeners.mouse_up = Some(Box::new(callback));
+        self
+    }
+
+    pub fn on_wheel<F>(mut self, callback: F) -> Self
+    where
+        F: 'static + FnMut(CanvasWheelEvent),
+    {
+        self.listeners.wheel = Some(Box::new(callback));
         self
     }
 
@@ -180,22 +315,61 @@ impl CanvasApp {
     }
 
     pub fn start(self) -> Result<(), JsValue> {
-        let scene = Rc::new(RefCell::new(self.scene.expect("scene must be set before start")));
+        let CanvasApp {
+            gl,
+            canvas,
+            window,
+            camera,
+            batcher,
+            update_frequency,
+            event_logging,
+            start_in_freeflight,
+            listeners,
+            scene,
+        } = self;
+
+        let scene = Rc::new(RefCell::new(scene.expect("scene must be set before start")));
+        let input_state = Rc::new(RefCell::new(InputState::default()));
+        let listener_handles = install_event_listeners(
+            canvas.as_ref(),
+            window.as_ref(),
+            listeners,
+            Rc::clone(&input_state),
+            event_logging,
+        )?;
         let raf_handle: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
         let raf_handle_inner = Rc::clone(&raf_handle);
-        let gl_inner = Rc::clone(&self.gl);
-        let canvas_inner = Rc::clone(&self.canvas);
-        let window_inner = Rc::clone(&self.window);
-        let camera_inner = Rc::clone(&self.camera);
-        let mut batcher = self.batcher;
+        let gl_inner = Rc::clone(&gl);
+        let canvas_inner = Rc::clone(&canvas);
+        let window_inner = Rc::clone(&window);
+        let camera_inner = Rc::clone(&camera);
+        let mut batcher = batcher;
         let scene_inner = Rc::clone(&scene);
-        let update_interval = 1000.0 / self.update_frequency as f64;
+        let input_state_inner = Rc::clone(&input_state);
+        let update_interval = 1000.0 / update_frequency as f64;
         let last_update_time = Rc::new(RefCell::new(f64::NEG_INFINITY));
         let last_update_time_inner = Rc::clone(&last_update_time);
+        let last_frame_time = Rc::new(RefCell::new(f64::NEG_INFINITY));
+        let last_frame_time_inner = Rc::clone(&last_frame_time);
         let last_draw_time = Rc::new(RefCell::new(f64::NEG_INFINITY));
         let last_draw_time_inner = Rc::clone(&last_draw_time);
 
+        camera_inner.borrow_mut().set_freeflight(start_in_freeflight);
+
         *raf_handle_inner.borrow_mut() = Some(Closure::wrap(Box::new(move |time: f64| {
+            let _keep_listener_handles_alive = &listener_handles;
+            let dt_seconds = {
+                let mut last_time = last_frame_time_inner.borrow_mut();
+                let dt = if *last_time == f64::NEG_INFINITY {
+                    0.0
+                } else {
+                    ((time - *last_time) / 1000.0) as f32
+                };
+                *last_time = time;
+                dt
+            };
+
+            let frame_input = input_state_inner.borrow_mut().take_frame();
             let logical_width = window_inner
                 .inner_width()
                 .ok()
@@ -217,7 +391,45 @@ impl CanvasApp {
                 canvas_inner.set_height(height);
             }
 
-            camera_inner.update_aspect(gl_inner.as_ref(), logical_width as f32 / logical_height as f32);
+            {
+                let mut camera = camera_inner.borrow_mut();
+
+                if frame_input.toggle_freeflight_requested {
+                    camera.toggle_freeflight();
+                }
+
+                if camera.is_freeflight() {
+                    camera.orbit(frame_input.mouse_dx as f32, frame_input.mouse_dy as f32);
+
+                    let forward = key_down(&frame_input.keys_down, "KeyW") as i32
+                        - key_down(&frame_input.keys_down, "KeyS") as i32;
+                    let strafe = key_down(&frame_input.keys_down, "KeyD") as i32
+                        - key_down(&frame_input.keys_down, "KeyA") as i32;
+                    let vertical = key_down(&frame_input.keys_down, "Space") as i32
+                        - key_down(&frame_input.keys_down, "ShiftLeft") as i32
+                        - key_down(&frame_input.keys_down, "ShiftRight") as i32;
+
+                    camera.freeflight_move(forward as f32, strafe as f32, vertical as f32, dt_seconds);
+
+                    if frame_input.wheel_delta.abs() > f64::EPSILON {
+                        camera.dolly(-(frame_input.wheel_delta as f32) * 0.01);
+                    }
+                } else {
+                    if frame_input.modifiers.ctrl && frame_input.mouse_buttons & 1 != 0 {
+                        camera.orbit(-frame_input.mouse_dx as f32, -frame_input.mouse_dy as f32);
+                    } else if frame_input.modifiers.ctrl && frame_input.mouse_buttons & 4 != 0 {
+                        camera.pan(frame_input.mouse_dx as f32, frame_input.mouse_dy as f32);
+                    } else if frame_input.modifiers.ctrl && frame_input.mouse_buttons & 2 != 0 {
+                        camera.dolly((frame_input.mouse_dy as f32) * -0.01);
+                    }
+
+                    if frame_input.wheel_delta.abs() > f64::EPSILON {
+                        camera.dolly((frame_input.wheel_delta as f32) * 0.01);
+                    }
+                }
+
+                camera.update_aspect(gl_inner.as_ref(), logical_width as f32 / logical_height as f32);
+            }
 
             if *last_update_time_inner.borrow() == f64::NEG_INFINITY
                 || time - *last_update_time_inner.borrow() >= update_interval
@@ -278,7 +490,7 @@ impl CanvasApp {
                 .unwrap();
         }) as Box<dyn FnMut(f64)>));
 
-        self.window
+        window
             .request_animation_frame(
                 raf_handle_inner
                     .borrow()
@@ -291,6 +503,205 @@ impl CanvasApp {
 
         Ok(())
     }
+}
+
+fn install_event_listeners(
+    canvas: &HtmlCanvasElement,
+    window: &web_sys::Window,
+    mut listeners: CanvasListeners,
+    input_state: Rc<RefCell<InputState>>,
+    event_logging: bool,
+) -> Result<Vec<Closure<dyn FnMut(web_sys::Event)>>, JsValue> {
+    let mut handles: Vec<Closure<dyn FnMut(web_sys::Event)>> = Vec::new();
+
+    let mouse_down_input_state = Rc::clone(&input_state);
+    let mut mouse_down_callback = listeners.mouse_down.take();
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let event = event.dyn_into::<web_sys::MouseEvent>().unwrap();
+        mouse_down_input_state.borrow_mut().mouse_buttons = event.buttons();
+        let event = CanvasMouseButtonEvent {
+            button: event.button() as u16,
+            x: event.client_x() as f64,
+            y: event.client_y() as f64,
+            modifiers: CanvasModifiers {
+                shift: event.shift_key(),
+                ctrl: event.ctrl_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            },
+        };
+        if event_logging {
+            console::log_1(&format!("mouse_down: {:?}", event).into());
+        }
+        if let Some(callback) = mouse_down_callback.as_mut() {
+            callback(event);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+
+    canvas.add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())?;
+    handles.push(closure);
+
+    let mouse_move_input_state = Rc::clone(&input_state);
+    let mut mouse_move_callback = listeners.mouse_move.take();
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let event = event.dyn_into::<web_sys::MouseEvent>().unwrap();
+        {
+            let mut input = mouse_move_input_state.borrow_mut();
+            input.mouse_dx += event.movement_x() as f64;
+            input.mouse_dy += event.movement_y() as f64;
+            input.mouse_buttons = event.buttons();
+            input.modifiers = CanvasModifiers {
+                shift: event.shift_key(),
+                ctrl: event.ctrl_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            };
+        }
+        let event = CanvasMouseMoveEvent {
+            x: event.client_x() as f64,
+            y: event.client_y() as f64,
+            dx: event.movement_x() as f64,
+            dy: event.movement_y() as f64,
+            buttons: event.buttons(),
+            modifiers: CanvasModifiers {
+                shift: event.shift_key(),
+                ctrl: event.ctrl_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            },
+        };
+        if event_logging {
+            console::log_1(&format!("mouse_move: {:?}", event).into());
+        }
+        if let Some(callback) = mouse_move_callback.as_mut() {
+            callback(event);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+
+    window.add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())?;
+    handles.push(closure);
+
+    let mouse_up_input_state = Rc::clone(&input_state);
+    let mut mouse_up_callback = listeners.mouse_up.take();
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let event = event.dyn_into::<web_sys::MouseEvent>().unwrap();
+        mouse_up_input_state.borrow_mut().mouse_buttons = event.buttons();
+        let event = CanvasMouseButtonEvent {
+            button: event.button() as u16,
+            x: event.client_x() as f64,
+            y: event.client_y() as f64,
+            modifiers: CanvasModifiers {
+                shift: event.shift_key(),
+                ctrl: event.ctrl_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            },
+        };
+        if event_logging {
+            console::log_1(&format!("mouse_up: {:?}", event).into());
+        }
+        if let Some(callback) = mouse_up_callback.as_mut() {
+            callback(event);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+
+    window.add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())?;
+    handles.push(closure);
+
+    let mut wheel_callback = listeners.wheel.take();
+    let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let event = event.dyn_into::<web_sys::WheelEvent>().unwrap();
+        event.prevent_default();
+        let event = CanvasWheelEvent {
+            delta_x: event.delta_x(),
+            delta_y: event.delta_y(),
+            delta_z: event.delta_z(),
+            x: event.client_x() as f64,
+            y: event.client_y() as f64,
+            modifiers: CanvasModifiers {
+                shift: event.shift_key(),
+                ctrl: event.ctrl_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            },
+        };
+        if event_logging {
+            console::log_1(&format!("wheel: {:?}", event).into());
+        }
+        if let Some(callback) = wheel_callback.as_mut() {
+            callback(event);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+
+    canvas.add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref())?;
+    handles.push(closure);
+
+    {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            event.prevent_default();
+        }) as Box<dyn FnMut(web_sys::Event)>);
+
+        canvas.add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref())?;
+        handles.push(closure);
+    }
+
+    {
+        let input_state = Rc::clone(&input_state);
+        let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let event = event.dyn_into::<web_sys::KeyboardEvent>().unwrap();
+            let code = event.code();
+            let mut input = input_state.borrow_mut();
+            input.keys_down.insert(code.clone());
+
+            if code == "KeyF" && !event.repeat() {
+                input.toggle_freeflight_requested = true;
+            }
+
+            if is_freeflight_key(&code) {
+                event.prevent_default();
+            }
+
+            if event_logging {
+                console::log_1(&format!("keydown: {}", code).into());
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+
+        window.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())?;
+        handles.push(closure);
+    }
+
+    {
+        let input_state = Rc::clone(&input_state);
+        let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let event = event.dyn_into::<web_sys::KeyboardEvent>().unwrap();
+            let code = event.code();
+            input_state.borrow_mut().keys_down.remove(&code);
+
+            if is_freeflight_key(&code) {
+                event.prevent_default();
+            }
+
+            if event_logging {
+                console::log_1(&format!("keyup: {}", code).into());
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+
+        window.add_event_listener_with_callback("keyup", closure.as_ref().unchecked_ref())?;
+        handles.push(closure);
+    }
+
+    Ok(handles)
+}
+
+fn key_down(keys_down: &HashSet<String>, code: &str) -> bool {
+    keys_down.contains(code)
+}
+
+fn is_freeflight_key(code: &str) -> bool {
+    matches!(
+        code,
+        "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space" | "ShiftLeft" | "ShiftRight" | "KeyF"
+    )
 }
 
 

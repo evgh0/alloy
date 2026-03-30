@@ -47,6 +47,7 @@ pub fn start() -> Result<(), JsValue> {
         .shading(Phong)
         .scene(CubeScene::new())
         .update_frequency(60)
+        .enable_logging()
         .start()
 }
 
