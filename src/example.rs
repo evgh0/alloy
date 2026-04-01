@@ -1,6 +1,6 @@
 use wasm_bindgen::prelude::*;
 
-use crate::{canvas, Batcher, Phong, Scene};
+use crate::{canvas, Batcher, Phong, Scene, Skybox};
 
 struct CubeScene {
     time: f32,
@@ -44,6 +44,7 @@ pub fn start() -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
     canvas()?
+        .skybox(Skybox::hdri_from_url("/source/autumn_field_puresky_2k.hdr"))
         .shading(Phong)
         .scene(CubeScene::new())
         .update_frequency(60)

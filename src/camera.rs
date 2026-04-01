@@ -8,6 +8,7 @@ pub struct CameraUniform {
     up: [f32; 4],
     projection: [f32; 4],
     pivot: [f32; 3],
+    pan_offset: [f32; 3],
     yaw: f32,
     pitch: f32,
     distance: f32,
@@ -43,6 +44,7 @@ impl CameraUniform {
             up: [0.0, 1.0, 0.0, 0.0],
             projection: [std::f32::consts::FRAC_PI_3, 1.0, 0.1, 100.0],
             pivot: [0.0, 0.0, 0.0],
+            pan_offset: [0.0, 0.0, 0.0],
             yaw: std::f32::consts::PI,
             pitch: 0.0,
             distance: 10.5,
@@ -117,7 +119,7 @@ impl CameraUniform {
             vec3_scale(up, dy * scale),
         );
 
-        self.pivot = vec3_add(self.pivot, offset);
+        self.pan_offset = vec3_add(self.pan_offset, offset);
         self.update_orbit_from_orientation();
     }
 
@@ -170,9 +172,10 @@ impl CameraUniform {
 
     fn update_orbit_from_orientation(&mut self) {
         let forward = self.forward();
-        let position = vec3_sub(self.pivot, vec3_scale(forward, self.distance.max(0.1)));
+        let orbit_center = vec3_add(self.pivot, self.pan_offset);
+        let position = vec3_sub(orbit_center, vec3_scale(forward, self.distance.max(0.1)));
         self.position = [position[0], position[1], position[2], 1.0];
-        self.target = [self.pivot[0], self.pivot[1], self.pivot[2], 1.0];
+        self.target = [orbit_center[0], orbit_center[1], orbit_center[2], 1.0];
     }
 
     fn update_freeflight_target(&mut self) {

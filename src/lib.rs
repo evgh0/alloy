@@ -14,8 +14,10 @@ use web_sys::{
 mod camera;
 mod primitive;
 mod batcher;
+mod skybox;
 mod example;
 use batcher::Batcher;
+pub use skybox::Skybox;
 
 const VERTEX_SHADER: &str = include_str!("shaders/triangle.vert.glsl");
 const FRAGMENT_SHADER: &str = include_str!("shaders/triangle.frag.glsl");
@@ -79,12 +81,14 @@ pub struct CanvasApp {
     gl: Rc<GL>,
     canvas: Rc<HtmlCanvasElement>,
     window: Rc<web_sys::Window>,
+    program: Rc<WebGlProgram>,
     camera: Rc<RefCell<camera::CameraUniform>>,
     batcher: Batcher,
     update_frequency: u32,
     event_logging: bool,
     start_in_freeflight: bool,
     listeners: CanvasListeners,
+    skybox: Option<Skybox>,
     scene: Option<Box<dyn Scene>>,
 }
 
@@ -244,12 +248,14 @@ impl CanvasApp {
             gl: Rc::new(gl),
             canvas: Rc::new(canvas),
             window: Rc::new(window),
+            program: Rc::new(program),
             camera: Rc::new(RefCell::new(camera)),
             batcher,
             update_frequency: 60,
             event_logging: false,
             start_in_freeflight: false,
             listeners: CanvasListeners::default(),
+            skybox: None,
             scene: None,
         })
     }
@@ -304,6 +310,11 @@ impl CanvasApp {
         self
     }
 
+    pub fn skybox(mut self, skybox: Skybox) -> Self {
+        self.skybox = Some(skybox);
+        self
+    }
+
     pub fn update_frequency(mut self, update_frequency: u32) -> Self {
         self.update_frequency = update_frequency.max(1);
         self
@@ -325,10 +336,16 @@ impl CanvasApp {
             event_logging,
             start_in_freeflight,
             listeners,
+            program,
+            skybox,
             scene,
         } = self;
 
         let scene = Rc::new(RefCell::new(scene.expect("scene must be set before start")));
+        let skybox = match skybox {
+            Some(skybox) => Some(skybox::build_skybox_renderer(&gl, skybox)?),
+            None => None,
+        };
         let input_state = Rc::new(RefCell::new(InputState::default()));
         let listener_handles = install_event_listeners(
             canvas.as_ref(),
@@ -342,9 +359,11 @@ impl CanvasApp {
         let gl_inner = Rc::clone(&gl);
         let canvas_inner = Rc::clone(&canvas);
         let window_inner = Rc::clone(&window);
+        let program_inner = Rc::clone(&program);
         let camera_inner = Rc::clone(&camera);
         let mut batcher = batcher;
         let scene_inner = Rc::clone(&scene);
+        let skybox_inner = Rc::new(skybox);
         let input_state_inner = Rc::clone(&input_state);
         let update_interval = 1000.0 / update_frequency as f64;
         let last_update_time = Rc::new(RefCell::new(f64::NEG_INFINITY));
@@ -445,6 +464,11 @@ impl CanvasApp {
             gl_inner.viewport(0, 0, width as i32, height as i32);
             gl_inner.clear_color(0.02, 0.02, 0.05, 1.0);
             gl_inner.clear(GL::COLOR_BUFFER_BIT | GL::DEPTH_BUFFER_BIT);
+
+            if let Some(skybox) = skybox_inner.as_ref() {
+                skybox.draw();
+                gl_inner.use_program(Some(program_inner.as_ref()));
+            }
 
             batcher.draw();
 
@@ -705,7 +729,7 @@ fn is_freeflight_key(code: &str) -> bool {
 }
 
 
-fn compile_shader(gl: &GL, shader_type: u32, source: &str) -> Result<WebGlShader, String> {
+pub(crate) fn compile_shader(gl: &GL, shader_type: u32, source: &str) -> Result<WebGlShader, String> {
     let shader = gl.create_shader(shader_type).ok_or("failed to create shader")?;
     gl.shader_source(&shader, source);
     gl.compile_shader(&shader);
@@ -723,7 +747,7 @@ fn compile_shader(gl: &GL, shader_type: u32, source: &str) -> Result<WebGlShader
     }
 }
 
-fn link_program(gl: &GL, vert: &WebGlShader, frag: &WebGlShader) -> Result<WebGlProgram, String> {
+pub(crate) fn link_program(gl: &GL, vert: &WebGlShader, frag: &WebGlShader) -> Result<WebGlProgram, String> {
     let program = gl.create_program().ok_or("failed to create program")?;
     gl.attach_shader(&program, vert);
     gl.attach_shader(&program, frag);
